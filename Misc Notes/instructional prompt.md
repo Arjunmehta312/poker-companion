@@ -118,4 +118,4 @@ Start by implementing the **backend API and WebSocket server**. Once the backend
 
 ## **🔧 Additional Constraints**  
 - Do NOT use Tailwind CSS – use standard CSS (App.css) or inline styles instead.  
-- Keep dependencies minimal – avoid complex state management like Redux unless necessary.  
+- Keep dependencies minimal – avoid complex state management like Redux unless necessary.
