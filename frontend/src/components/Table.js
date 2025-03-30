@@ -10,11 +10,15 @@ const Table = () => {
     loading, 
     error, 
     settlements,
+    isGameReady,
+    startGame,
     endGame,
     resetGame,
-    kickPlayer
+    kickPlayer,
+    isAdmin
   } = useGame();
   const [showSettlements, setShowSettlements] = useState(false);
+  const [showRoomCode, setShowRoomCode] = useState(true);
   const navigate = useNavigate();
   
   // If no game state or player, redirect to home
@@ -23,6 +27,21 @@ const Table = () => {
       navigate('/');
     }
   }, [gameState, loading, navigate]);
+  
+  // Auto-hide the room code after 60 seconds
+  useEffect(() => {
+    if (showRoomCode) {
+      const timer = setTimeout(() => {
+        setShowRoomCode(false);
+      }, 60000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [showRoomCode]);
+  
+  const handleStartGame = async () => {
+    await startGame();
+  };
   
   const handleEndGame = async () => {
     const results = await endGame();
@@ -57,6 +76,20 @@ const Table = () => {
     return null;
   }
   
+  // Get the status message based on game state
+  const getStatusMessage = () => {
+    if (gameState.status === 'waiting') {
+      return 'Waiting for players to get ready...';
+    } else if (gameState.status === 'ready') {
+      return 'All players ready! Game can start.';
+    } else if (gameState.status === 'active') {
+      return 'Game in progress';
+    } else if (gameState.status === 'finished') {
+      return 'Game has ended';
+    }
+    return '';
+  };
+  
   // Calculate positions for players around the table
   const getPlayerPosition = (seatNumber, totalSeats) => {
     const angle = (Math.PI * 2 / totalSeats) * (seatNumber - 1) - Math.PI / 2;
@@ -71,7 +104,33 @@ const Table = () => {
   return (
     <div className="table-container">
       <div className="header">
-        <h1>Poker Game: {roomCode}</h1>
+        <div className="title-section">
+          <h1>Poker Game</h1>
+          {showRoomCode ? (
+            <div className="room-code-display">
+              <span>Room Code: </span>
+              <span className="room-code">{roomCode}</span>
+              <button 
+                className="toggle-room-code"
+                onClick={() => setShowRoomCode(false)}
+              >
+                Hide
+              </button>
+            </div>
+          ) : (
+            <button 
+              className="toggle-room-code"
+              onClick={() => setShowRoomCode(true)}
+            >
+              Show Room Code
+            </button>
+          )}
+        </div>
+        
+        <div className="game-status">
+          <div className="status-message">{getStatusMessage()}</div>
+        </div>
+        
         <div className="game-info">
           <div className="pot">Pot: ${gameState.pot}</div>
           <div className="blinds">
@@ -80,67 +139,99 @@ const Table = () => {
           <div className="round">Round: {gameState.round}</div>
         </div>
         
-        {player && player.seat === 1 && (
+        {isAdmin() && (
           <div className="admin-controls">
-            <button 
-              className="btn-danger"
-              onClick={handleEndGame}
-              disabled={gameState.status === 'finished'}
-            >
-              End Game
-            </button>
-            <button 
-              className="btn-primary"
-              onClick={handleResetGame}
-              disabled={gameState.status !== 'finished'}
-            >
-              New Game
-            </button>
+            {!gameState.isStarted && isGameReady && (
+              <button 
+                className="btn-success"
+                onClick={handleStartGame}
+              >
+                Start Game
+              </button>
+            )}
+            
+            {gameState.isStarted && (
+              <button 
+                className="btn-danger"
+                onClick={handleEndGame}
+                disabled={gameState.status === 'finished'}
+              >
+                End Game
+              </button>
+            )}
+            
+            {gameState.status === 'finished' && (
+              <button 
+                className="btn-primary"
+                onClick={handleResetGame}
+              >
+                New Game
+              </button>
+            )}
           </div>
         )}
       </div>
       
-      {/* Poker table */}
-      <div className="poker-table">
-        {/* Center pot display */}
-        <div className="table-center">
-          <div className="pot-amount">${gameState.pot}</div>
+      {!gameState.isStarted && (
+        <div className="waiting-message">
+          <h2>Waiting for players to join...</h2>
+          <p>Share the room code with your friends to join!</p>
+          <div className="player-list">
+            <h3>Players ({gameState.players.length}):</h3>
+            <ul>
+              {gameState.players.map(tablePlayer => (
+                <li key={tablePlayer.id} className={tablePlayer.isReady ? 'ready' : 'not-ready'}>
+                  {tablePlayer.name} {tablePlayer.isReady ? '(Ready)' : '(Not Ready)'}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
-        
-        {/* Players around the table */}
-        {gameState.players && gameState.players.map(tablePlayer => {
-          const position = getPlayerPosition(tablePlayer.seat, 10);
-          const isCurrentTurn = gameState.currentTurn === tablePlayer.seat;
+      )}
+      
+      {/* Poker table */}
+      {gameState.isStarted && (
+        <div className="poker-table">
+          {/* Center pot display */}
+          <div className="table-center">
+            <div className="pot-amount">${gameState.pot}</div>
+          </div>
           
-          return (
-            <div 
-              key={tablePlayer.id}
-              className={`player-spot ${isCurrentTurn ? 'current-turn' : ''} ${tablePlayer.status}`}
-              style={{
-                left: `${position.x}%`,
-                top: `${position.y}%`,
-              }}
-            >
-              <div className="player-name">{tablePlayer.name}</div>
-              <div className="player-balance">${tablePlayer.balance}</div>
-              {tablePlayer.currentBet > 0 && (
-                <div className="player-bet">${tablePlayer.currentBet}</div>
-              )}
-              <div className="player-status">{tablePlayer.status}</div>
-              
-              {/* Kick button (only for admin and not for self) */}
-              {player && player.seat === 1 && player.id !== tablePlayer.id && (
-                <button 
-                  className="kick-button"
-                  onClick={() => handleKickPlayer(tablePlayer.id)}
-                >
-                  Kick
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+          {/* Players around the table */}
+          {gameState.players && gameState.players.map(tablePlayer => {
+            const position = getPlayerPosition(tablePlayer.seat, 10);
+            const isCurrentTurn = gameState.currentTurn === tablePlayer.seat;
+            
+            return (
+              <div 
+                key={tablePlayer.id}
+                className={`player-spot ${isCurrentTurn ? 'current-turn' : ''} ${tablePlayer.status}`}
+                style={{
+                  left: `${position.x}%`,
+                  top: `${position.y}%`,
+                }}
+              >
+                <div className="player-name">{tablePlayer.name}</div>
+                <div className="player-balance">${tablePlayer.balance}</div>
+                {tablePlayer.currentBet > 0 && (
+                  <div className="player-bet">${tablePlayer.currentBet}</div>
+                )}
+                <div className="player-status">{tablePlayer.status}</div>
+                
+                {/* Kick button (only for admin and not for self) */}
+                {isAdmin() && player.id !== tablePlayer.id && (
+                  <button 
+                    className="kick-button"
+                    onClick={() => handleKickPlayer(tablePlayer.id)}
+                  >
+                    Kick
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       
       {/* Settlements modal */}
       {showSettlements && settlements && (
@@ -189,7 +280,7 @@ const Table = () => {
               )}
             </div>
             
-            {player && player.seat === 1 && (
+            {isAdmin() && (
               <button 
                 className="btn-primary"
                 onClick={handleResetGame}

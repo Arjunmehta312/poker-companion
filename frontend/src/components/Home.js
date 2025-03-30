@@ -3,157 +3,161 @@ import { useNavigate } from 'react-router-dom';
 import { useGame } from '../context/GameContext';
 
 const Home = () => {
-  const [createMode, setCreateMode] = useState(false);
-  const [joinMode, setJoinMode] = useState(false);
-  const [buyInAmount, setBuyInAmount] = useState(100);
+  const navigate = useNavigate();
+  const { createGame, joinGame, loading, error } = useGame();
+  
+  const [buyIn, setBuyIn] = useState(100);
   const [roomCode, setRoomCode] = useState('');
   const [playerName, setPlayerName] = useState('');
-  const { createGame, joinGame, loading, error } = useGame();
-  const navigate = useNavigate();
-
+  const [activeTab, setActiveTab] = useState('create');
+  const [localError, setLocalError] = useState('');
+  
   const handleCreateGame = async (e) => {
     e.preventDefault();
+    setLocalError('');
     
-    const game = await createGame(buyInAmount);
+    if (buyIn <= 0) {
+      setLocalError('Buy-in amount must be greater than 0');
+      return;
+    }
     
-    if (game) {
-      // Now join the game as the creator
-      setRoomCode(game.roomCode);
-      setJoinMode(true);
-      setCreateMode(false);
+    try {
+      const result = await createGame(buyIn);
+      console.log('Game created:', result);
+      // Navigation happens in the context
+    } catch (err) {
+      setLocalError(err.message || 'Failed to create game');
     }
   };
-
+  
   const handleJoinGame = async (e) => {
     e.preventDefault();
+    setLocalError('');
     
-    const player = await joinGame(roomCode, playerName);
+    if (!roomCode.trim()) {
+      setLocalError('Room code is required');
+      return;
+    }
     
-    if (player) {
-      if (player.seat === 1) {
-        // First player (admin) goes to table display
-        navigate(`/table/${roomCode}`);
-      } else {
-        // Other players go to controller
-        navigate(`/controller/${roomCode}`);
-      }
+    if (!playerName.trim()) {
+      setLocalError('Player name is required');
+      return;
+    }
+    
+    try {
+      const result = await joinGame(roomCode, playerName);
+      console.log('Joined game:', result);
+      // Navigation happens in the context
+    } catch (err) {
+      setLocalError(err.message || 'Failed to join game');
     }
   };
-
+  
   return (
     <div className="home-container">
-      <h1>Poker Companion</h1>
-      <p>The digital chip manager for your home poker games</p>
-      
-      {!createMode && !joinMode ? (
-        <div className="button-group">
+      <div className="home-content">
+        <h1 className="app-title">Poker Companion</h1>
+        <p className="app-description">
+          Play poker without physical chips - just use real cards and track everything digitally!
+        </p>
+        
+        <div className="tabs">
           <button 
-            className="btn-primary"
-            onClick={() => setCreateMode(true)}
+            className={`tab-button ${activeTab === 'create' ? 'active' : ''}`}
+            onClick={() => setActiveTab('create')}
           >
-            Create New Game
+            Create Game
           </button>
           <button 
-            className="btn-secondary"
-            onClick={() => setJoinMode(true)}
+            className={`tab-button ${activeTab === 'join' ? 'active' : ''}`}
+            onClick={() => setActiveTab('join')}
           >
-            Join Existing Game
+            Join Game
           </button>
         </div>
-      ) : null}
-      
-      {createMode && (
-        <div className="form-container">
-          <h2>Create a New Game</h2>
-          <form onSubmit={handleCreateGame}>
-            <div className="form-group">
-              <label htmlFor="buyInAmount">Buy-in Amount:</label>
-              <input
-                type="number"
-                id="buyInAmount"
-                value={buyInAmount}
-                onChange={(e) => setBuyInAmount(Number(e.target.value))}
-                min="1"
-                required
-              />
-            </div>
-            <div className="button-group">
+        
+        {error && <div className="error-message">{error}</div>}
+        {localError && <div className="error-message">{localError}</div>}
+        
+        {activeTab === 'create' ? (
+          <div className="tab-content">
+            <form onSubmit={handleCreateGame}>
+              <div className="form-group">
+                <label htmlFor="buyIn">Buy-in Amount ($):</label>
+                <input
+                  type="number"
+                  id="buyIn"
+                  value={buyIn}
+                  onChange={(e) => setBuyIn(Number(e.target.value))}
+                  min="1"
+                  required
+                  disabled={loading}
+                />
+              </div>
+              
               <button 
-                type="submit"
+                type="submit" 
                 className="btn-primary"
                 disabled={loading}
               >
-                {loading ? 'Creating...' : 'Create Game'}
+                {loading ? 'Creating Game...' : 'Create Game'}
               </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => setCreateMode(false)}
-                disabled={loading}
-              >
-                Cancel
-              </button>
+            </form>
+            
+            <div className="info-box">
+              <h3>How it works:</h3>
+              <ol>
+                <li>Create a game with a buy-in amount</li>
+                <li>Share the room code with your friends</li>
+                <li>Everyone joins with their phones</li>
+                <li>Start playing with real cards!</li>
+              </ol>
             </div>
-          </form>
-        </div>
-      )}
-      
-      {joinMode && (
-        <div className="form-container">
-          <h2>Join a Game</h2>
-          <form onSubmit={handleJoinGame}>
-            <div className="form-group">
-              <label htmlFor="roomCode">Room Code:</label>
-              <input
-                type="text"
-                id="roomCode"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="Enter room code"
-                required
-                readOnly={createMode}
-              />
-            </div>
-            <div className="form-group">
-              <label htmlFor="playerName">Your Name:</label>
-              <input
-                type="text"
-                id="playerName"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="Enter your name"
-                required
-              />
-            </div>
-            <div className="button-group">
+          </div>
+        ) : (
+          <div className="tab-content">
+            <form onSubmit={handleJoinGame}>
+              <div className="form-group">
+                <label htmlFor="roomCode">Room Code:</label>
+                <input
+                  type="text"
+                  id="roomCode"
+                  value={roomCode}
+                  onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                  placeholder="Enter room code"
+                  required
+                  disabled={loading}
+                />
+              </div>
+              
+              <div className="form-group">
+                <label htmlFor="playerName">Your Name:</label>
+                <input
+                  type="text"
+                  id="playerName"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  placeholder="Enter your name"
+                  required
+                  disabled={loading}
+                />
+              </div>
+              
               <button 
-                type="submit"
+                type="submit" 
                 className="btn-primary"
                 disabled={loading}
               >
-                {loading ? 'Joining...' : 'Join Game'}
+                {loading ? 'Joining Game...' : 'Join Game'}
               </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => {
-                  setJoinMode(false);
-                  setRoomCode('');
-                }}
-                disabled={loading}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
+            </form>
+          </div>
+        )}
+      </div>
       
-      {error && (
-        <div className="error-message">
-          {error}
-        </div>
-      )}
+      <footer className="footer">
+        <p>Poker Companion &copy; {new Date().getFullYear()}</p>
+      </footer>
     </div>
   );
 };

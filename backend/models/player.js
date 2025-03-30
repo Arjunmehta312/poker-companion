@@ -1,11 +1,11 @@
-const { DataTypes } = require('sequelize');
+import { DataTypes } from 'sequelize';
 
-module.exports = (sequelize) => {
+export default (sequelize) => {
   const Player = sequelize.define('Player', {
     id: {
-      type: DataTypes.INTEGER,
-      primaryKey: true,
-      autoIncrement: true
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true
     },
     name: {
       type: DataTypes.STRING,
@@ -15,13 +15,9 @@ module.exports = (sequelize) => {
       type: DataTypes.FLOAT,
       defaultValue: 0
     },
-    totalBuyIn: {
+    buyIn: {
       type: DataTypes.FLOAT,
       defaultValue: 0
-    },
-    seat: {
-      type: DataTypes.INTEGER,
-      allowNull: true
     },
     status: {
       type: DataTypes.ENUM('active', 'folded', 'all-in', 'out'),
@@ -31,13 +27,25 @@ module.exports = (sequelize) => {
       type: DataTypes.FLOAT,
       defaultValue: 0
     },
+    seatNumber: {
+      type: DataTypes.INTEGER,
+      allowNull: false
+    },
+    isAdmin: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
     isConnected: {
       type: DataTypes.BOOLEAN,
       defaultValue: true
     },
-    socketId: {
-      type: DataTypes.STRING,
-      allowNull: true
+    isReady: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    cards: {
+      type: DataTypes.JSON,
+      defaultValue: []
     }
   });
 

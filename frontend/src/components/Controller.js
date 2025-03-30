@@ -12,6 +12,8 @@ const Controller = () => {
     placeBet, 
     buyIn, 
     isPlayerTurn,
+    isPlayerReady,
+    setPlayerReady,
     leaveGame 
   } = useGame();
   const [betAmount, setBetAmount] = useState(0);
@@ -40,6 +42,10 @@ const Controller = () => {
       setBetAmount(raiseAmount);
     }
   }, [gameState, player]);
+  
+  const handleToggleReady = async () => {
+    await setPlayerReady(!isPlayerReady());
+  };
   
   const handlePlaceBet = async (type) => {
     let amount = 0;
@@ -95,11 +101,13 @@ const Controller = () => {
     return null;
   }
   
-  // Get player status info
+  // Get game and player status
+  const gameStarted = gameState.isStarted;
   const canPlay = isPlayerTurn() && gameState.status === 'active';
   const isBusted = player.balance === 0 && player.status !== 'all-in';
   const isFolded = player.status === 'folded';
   const isAllIn = player.status === 'all-in';
+  const isReady = isPlayerReady();
   
   return (
     <div className="controller-container">
@@ -123,8 +131,33 @@ const Controller = () => {
         <div className="round">Round: {gameState.round}</div>
       </div>
       
+      {/* Ready button before game starts */}
+      {!gameStarted && (
+        <div className="ready-container">
+          <h2>Waiting for game to start</h2>
+          <p>Set yourself as ready when you want to play!</p>
+          <button
+            className={`btn-ready ${isReady ? 'ready' : 'not-ready'}`}
+            onClick={handleToggleReady}
+          >
+            {isReady ? 'I\'m Ready!' : 'Get Ready'}
+          </button>
+          
+          <div className="player-list">
+            <h3>Players:</h3>
+            <ul>
+              {gameState.players.map(p => (
+                <li key={p.id} className={p.isReady ? 'ready' : 'not-ready'}>
+                  {p.name} {p.isReady ? '(Ready)' : '(Not Ready)'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      
       {/* Buy-in section */}
-      {isBusted && !showBuyIn && (
+      {gameStarted && isBusted && !showBuyIn && (
         <div className="busted-message">
           <p>You're out of chips!</p>
           <button 
@@ -169,7 +202,7 @@ const Controller = () => {
       )}
       
       {/* Betting controls */}
-      {!isBusted && !showBuyIn && !isAllIn && (
+      {gameStarted && !isBusted && !showBuyIn && !isAllIn && (
         <div className="betting-controls">
           <div className="betting-info">
             {canPlay ? (

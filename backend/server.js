@@ -1,231 +1,319 @@
-require("dotenv").config();
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const socketIo = require("socket.io");
-const { sequelize } = require("./models");
-const gameRoutes = require("./routes/gameRoutes");
-const betRoutes = require("./routes/betRoutes");
-const { getGameState } = require("./utils/gameUtils");
+import dotenv from 'dotenv';
+import express from 'express';
+import http from 'http';
+import { Server } from 'socket.io';
+import cors from 'cors';
+import { Sequelize } from 'sequelize';
+import { v4 as uuidv4 } from 'uuid';
+import fetch from 'node-fetch';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import { createRequire } from 'module';
 
+// Set up __dirname equivalent for ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const require = createRequire(import.meta.url);
+
+// Load environment variables
+dotenv.config();
+
+// Import routes
+import gameRoutes from './routes/gameRoutes.js';
+import betRoutes from './routes/betRoutes.js';
+import { getGameState } from './utils/gameUtils.js';
+
+// Initialize express app
 const app = express();
-app.use(cors());
+const server = http.createServer(app);
+
+// CORS config
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true,
+};
+
+// Middleware
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Initialize Socket.io
+const io = new Server(server, {
+  cors: {
+    origin: process.env.SOCKET_ORIGIN || "http://localhost:3000",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
 
 // API routes
 app.use("/api/game", gameRoutes);
 app.use("/api/bet", betRoutes);
 
-const server = http.createServer(app);
-
-// Set up Socket.io
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+// Database setup
+const sequelize = new Sequelize({
+  dialect: 'sqlite',
+  storage: './database.sqlite',
+  logging: false
 });
 
-// Handle WebSocket connections
-io.on("connection", (socket) => {
-  console.log(`New client connected: ${socket.id}`);
-  
-  // Join a game room
-  socket.on("joinRoom", async ({ roomCode, playerId }) => {
-    try {
-      socket.join(roomCode);
-      
-      // If player ID is provided, update socket ID in player record
-      if (playerId) {
-        const { Player } = require("./models");
-        const player = await Player.findByPk(playerId);
-        
-        if (player) {
-          await player.update({
-            socketId: socket.id,
-            isConnected: true
-          });
-        }
+// Test database connection
+async function testDbConnection() {
+  try {
+    await sequelize.authenticate();
+    console.log('Database connection has been established successfully.');
+  } catch (error) {
+    console.error('Unable to connect to the database:', error);
+  }
+}
+
+// Call the function to test connection
+testDbConnection();
+
+// Sync database models
+async function syncDatabase() {
+  try {
+    console.log('Syncing database models...');
+    await sequelize.sync({ force: true }); // force: true will drop tables if they exist
+    console.log('Database models synchronized successfully.');
+  } catch (error) {
+    console.error('Error syncing database models:', error);
+  }
+}
+
+// Call the function to sync database
+syncDatabase();
+
+// Helper function to make API calls
+const makeApiCall = async (endpoint, method, data = null) => {
+  try {
+    const url = `http://localhost:${process.env.PORT || 5000}${endpoint}`;
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json'
       }
-      
-      // Get the game's state
-      const game = await sequelize.models.Game.findOne({
-        where: { roomCode }
-      });
-      
-      if (game) {
-        const gameState = await getGameState(game.id);
-        io.to(roomCode).emit("gameStateUpdate", gameState);
-      }
-      
-      console.log(`Client ${socket.id} joined room ${roomCode}`);
-    } catch (error) {
-      console.error("Error joining room:", error);
+    };
+    
+    if (data) {
+      options.body = JSON.stringify(data);
     }
-  });
+    
+    const response = await fetch(url, options);
+    return await response.json();
+  } catch (error) {
+    console.error('API call error:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Socket connections
+io.on('connection', (socket) => {
+  console.log('New client connected:', socket.id);
   
-  // Leave a game room
-  socket.on("leaveRoom", async ({ roomCode, playerId }) => {
-    try {
-      socket.leave(roomCode);
-      
-      // If player ID is provided, update connection status
-      if (playerId) {
-        const { Player } = require("./models");
-        const player = await Player.findByPk(playerId);
+  // Get query parameters from client
+  const { roomCode, playerId } = socket.handshake.query;
+  
+  if (roomCode) {
+    // Join the room
+    socket.join(roomCode);
+    console.log(`Client ${socket.id} joined room: ${roomCode}`);
+    
+    // Emit initial game state
+    const emitGameState = async () => {
+      try {
+        const gameState = await getGameState(roomCode);
+        io.to(roomCode).emit('gameState', gameState);
+      } catch (error) {
+        console.error('Error emitting game state:', error);
+        socket.emit('error', { message: 'Failed to get game state' });
+      }
+    };
+    
+    // Emit initial game state
+    emitGameState();
+    
+    // Handle player ready status
+    socket.on('playerReady', async ({ roomCode, playerId, isReady }) => {
+      try {
+        const result = await makeApiCall('/api/game/ready', 'POST', { playerId, isReady });
         
-        if (player) {
-          await player.update({
-            isConnected: false
-          });
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', gameState);
+          
+          // Check if all players are ready
+          if (gameState.status === 'ready') {
+            io.to(roomCode).emit('gameReady', gameState);
+          }
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to set player ready status' });
         }
+      } catch (error) {
+        console.error('Error handling player ready:', error);
+        socket.emit('error', { message: 'Server error' });
       }
-      
-      console.log(`Client ${socket.id} left room ${roomCode}`);
-    } catch (error) {
-      console.error("Error leaving room:", error);
-    }
-  });
-  
-  // Handle player actions
-  socket.on("playerAction", async ({ roomCode, playerId, action, amount }) => {
-    try {
-      const { Game, Player } = require("./models");
-      
-      // Find the player and game
-      const player = await Player.findByPk(playerId);
-      const game = await Game.findOne({ where: { roomCode } });
-      
-      if (!player || !game) {
-        socket.emit("error", { message: "Player or game not found" });
-        return;
+    });
+    
+    // Handle start game
+    socket.on('startGame', async ({ roomCode }) => {
+      try {
+        const result = await makeApiCall(`/api/game/start/${roomCode}`, 'POST');
+        
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameStarted', gameState);
+          io.to(roomCode).emit('gameState', gameState);
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to start game' });
+        }
+      } catch (error) {
+        console.error('Error starting game:', error);
+        socket.emit('error', { message: 'Server error' });
       }
-      
-      // Make the appropriate API request based on the action
-      const fetch = require("node-fetch");
-      const baseUrl = `http://localhost:${process.env.PORT || 5000}/api`;
-      
-      let response;
-      
-      switch (action) {
-        case "bet":
-          response = await fetch(`${baseUrl}/bet/place`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount,
-              type: "raise",
-              gameId: game.id
-            })
-          });
-          break;
-          
-        case "call":
-          response = await fetch(`${baseUrl}/bet/place`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount,
-              type: "call",
-              gameId: game.id
-            })
-          });
-          break;
-          
-        case "fold":
-          response = await fetch(`${baseUrl}/bet/place`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount: 0,
-              type: "fold",
-              gameId: game.id
-            })
-          });
-          break;
-          
-        case "check":
-          response = await fetch(`${baseUrl}/bet/place`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount: 0,
-              type: "check",
-              gameId: game.id
-            })
-          });
-          break;
-          
-        case "all-in":
-          response = await fetch(`${baseUrl}/bet/place`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount: 0,
-              type: "all-in",
-              gameId: game.id
-            })
-          });
-          break;
-          
-        case "buy-in":
-          response = await fetch(`${baseUrl}/game/buy-in`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              playerId,
-              amount
-            })
-          });
-          break;
-          
-        default:
-          socket.emit("error", { message: "Invalid action" });
+    });
+    
+    // Handle player action (bet, check, fold, etc.)
+    socket.on('placeBet', async ({ betType, amount }) => {
+      try {
+        // Check if game has started before allowing actions other than 'buy-in'
+        const gameState = await getGameState(roomCode);
+        
+        if (!gameState.isStarted && betType !== 'buy-in') {
+          socket.emit('error', { message: 'Game has not started yet' });
           return;
-      }
-      
-      // Get updated game state
-      const gameState = await getGameState(game.id);
-      io.to(roomCode).emit("gameStateUpdate", gameState);
-      
-    } catch (error) {
-      console.error("Error processing player action:", error);
-      socket.emit("error", { message: "Failed to process action" });
-    }
-  });
-  
-  // Handle disconnect
-  socket.on("disconnect", async () => {
-    try {
-      console.log(`Client disconnected: ${socket.id}`);
-      
-      // Update player connection status if this socket belongs to a player
-      const { Player } = require("./models");
-      const player = await Player.findOne({
-        where: { socketId: socket.id }
-      });
-      
-      if (player) {
-        await player.update({
-          isConnected: false
+        }
+        
+        const result = await makeApiCall('/api/game/bet', 'POST', {
+          roomCode,
+          playerId,
+          betType,
+          amount: betType === 'all-in' ? gameState.players.find(p => p.id === playerId)?.balance || 0 : amount
         });
         
-        // Notify others in the same game
-        const game = await sequelize.models.Game.findByPk(player.GameId);
-        if (game) {
-          const gameState = await getGameState(game.id);
-          io.to(game.roomCode).emit("gameStateUpdate", gameState);
+        if (result.success) {
+          // Get updated game state
+          const updatedGameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', updatedGameState);
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to place bet' });
+        }
+      } catch (error) {
+        console.error('Error placing bet:', error);
+        socket.emit('error', { message: 'Server error' });
+      }
+    });
+    
+    // Handle buy-in
+    socket.on('buyIn', async ({ amount }) => {
+      try {
+        const result = await makeApiCall('/api/game/buyin', 'POST', {
+          roomCode,
+          playerId,
+          amount
+        });
+        
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', gameState);
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to buy in' });
+        }
+      } catch (error) {
+        console.error('Error buying in:', error);
+        socket.emit('error', { message: 'Server error' });
+      }
+    });
+    
+    // Handle end game
+    socket.on('endGame', async ({ roomCode }) => {
+      try {
+        const result = await makeApiCall(`/api/game/end/${roomCode}`, 'POST');
+        
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', gameState);
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to end game' });
+        }
+      } catch (error) {
+        console.error('Error ending game:', error);
+        socket.emit('error', { message: 'Server error' });
+      }
+    });
+    
+    // Handle reset game
+    socket.on('resetGame', async ({ roomCode }) => {
+      try {
+        const result = await makeApiCall(`/api/game/reset/${roomCode}`, 'POST');
+        
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', gameState);
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to reset game' });
+        }
+      } catch (error) {
+        console.error('Error resetting game:', error);
+        socket.emit('error', { message: 'Server error' });
+      }
+    });
+    
+    // Handle kick player
+    socket.on('kickPlayer', async ({ roomCode, playerId }) => {
+      try {
+        const result = await makeApiCall('/api/game/kick', 'POST', {
+          roomCode,
+          playerId
+        });
+        
+        if (result.success) {
+          // Get updated game state
+          const gameState = await getGameState(roomCode);
+          io.to(roomCode).emit('gameState', gameState);
+          
+          // Also notify the kicked player
+          io.to(roomCode).emit('playerKicked', { playerId });
+        } else {
+          socket.emit('error', { message: result.error || 'Failed to kick player' });
+        }
+      } catch (error) {
+        console.error('Error kicking player:', error);
+        socket.emit('error', { message: 'Server error' });
+      }
+    });
+    
+    // Handle disconnect
+    socket.on('disconnect', async () => {
+      console.log('Client disconnected:', socket.id);
+      
+      if (playerId) {
+        try {
+          // Update player connection status
+          const result = await makeApiCall('/api/game/connection', 'POST', {
+            roomCode,
+            playerId,
+            isConnected: false
+          });
+          
+          if (result.success) {
+            // Notify other players
+            const gameState = await getGameState(roomCode);
+            io.to(roomCode).emit('gameState', gameState);
+            io.to(roomCode).emit('playerDisconnected', { playerId });
+          }
+        } catch (error) {
+          console.error('Error handling disconnect:', error);
         }
       }
-    } catch (error) {
-      console.error("Error handling disconnect:", error);
-    }
-  });
+    });
+  }
 });
 
 // Sync database and start server

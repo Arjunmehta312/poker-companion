@@ -1,139 +1,144 @@
-const express = require('express');
+import express from 'express';
+import models from '../models/index.js';
+import { getGameState, getNextPlayerTurn } from '../utils/gameUtils.js';
+
 const router = express.Router();
-const { Game, Player, Bet } = require('../models');
-const { getGameState, getNextPlayerTurn } = require('../utils/gameUtils');
 
 // Place a bet
 router.post('/place', async (req, res) => {
   try {
-    const { playerId, amount, type, gameId } = req.body;
-    
-    if (!playerId || !type || !gameId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Player ID, bet type, and game ID are required'
-      });
+    const { playerId, gameId, type, amount } = req.body;
+
+    if (!playerId || !gameId || !type) {
+      return res.status(400).json({ success: false, error: 'Player ID, game ID, and bet type are required' });
     }
-    
-    // Find the game
-    const game = await Game.findByPk(gameId);
-    
-    if (!game) {
-      return res.status(404).json({
-        success: false,
-        message: 'Game not found'
-      });
-    }
-    
+
     // Find the player
-    const player = await Player.findByPk(playerId);
-    
+    const player = await models.Player.findByPk(playerId);
     if (!player) {
-      return res.status(404).json({
-        success: false,
-        message: 'Player not found'
-      });
+      return res.status(404).json({ success: false, error: 'Player not found' });
     }
-    
+
+    // Find the game
+    const game = await models.Game.findByPk(gameId);
+    if (!game) {
+      return res.status(404).json({ success: false, error: 'Game not found' });
+    }
+
     // Check if it's the player's turn
-    if (game.currentTurn !== null && player.seat !== game.currentTurn) {
-      return res.status(400).json({
-        success: false,
-        message: 'Not your turn'
-      });
+    if (game.currentTurn !== player.id) {
+      return res.status(400).json({ success: false, error: 'It is not your turn' });
     }
-    
-    // Process the bet based on its type
+
+    // Process the bet based on type
+    let betAmount = 0;
+
     switch (type) {
       case 'fold':
-        // Player folds
         await player.update({ status: 'folded' });
         break;
-        
+
       case 'check':
-        // Player checks (no action needed)
+        // Check if player can check (no current bets)
+        const highestBet = await models.Player.max('currentBet', { where: { GameId: gameId } });
+        if (player.currentBet < highestBet) {
+          return res.status(400).json({ success: false, error: 'Cannot check, must call or raise' });
+        }
         break;
-        
+
       case 'call':
-      case 'raise':
-        // Check if player has enough balance
-        if (amount > player.balance) {
-          return res.status(400).json({
-            success: false,
-            message: 'Insufficient balance'
-          });
+        // Calculate call amount
+        const callAmount = await models.Player.max('currentBet', { where: { GameId: gameId } }) - player.currentBet;
+        
+        if (callAmount <= 0) {
+          return res.status(400).json({ success: false, error: 'Nothing to call' });
         }
         
-        // Update player's balance and current bet
+        if (callAmount > player.balance) {
+          return res.status(400).json({ success: false, error: 'Not enough balance to call' });
+        }
+        
+        // Update player balance and current bet
+        await player.update({
+          balance: player.balance - callAmount,
+          currentBet: player.currentBet + callAmount
+        });
+        
+        // Update pot
+        await game.update({ pot: game.pot + callAmount });
+        
+        betAmount = callAmount;
+        break;
+
+      case 'raise':
+        if (!amount || amount <= 0) {
+          return res.status(400).json({ success: false, error: 'Raise amount is required' });
+        }
+        
+        // Check if player has enough balance
+        if (amount > player.balance) {
+          return res.status(400).json({ success: false, error: 'Not enough balance to raise' });
+        }
+        
+        // Update player balance and current bet
         await player.update({
           balance: player.balance - amount,
           currentBet: player.currentBet + amount
         });
         
-        // Update game pot
-        await game.update({
-          pot: game.pot + amount
-        });
+        // Update pot
+        await game.update({ pot: game.pot + amount });
         
-        // Handle all-in situation
-        if (player.balance === 0) {
-          await player.update({ status: 'all-in' });
-        }
+        betAmount = amount;
         break;
-        
+
       case 'all-in':
+        // Go all-in with remaining balance
         const allInAmount = player.balance;
         
-        // Update player's balance and current bet
+        if (allInAmount <= 0) {
+          return res.status(400).json({ success: false, error: 'No balance to go all-in' });
+        }
+        
+        // Update player status, balance, and current bet
         await player.update({
+          status: 'all-in',
           balance: 0,
-          currentBet: player.currentBet + allInAmount,
-          status: 'all-in'
+          currentBet: player.currentBet + allInAmount
         });
         
-        // Update game pot
-        await game.update({
-          pot: game.pot + allInAmount
-        });
+        // Update pot
+        await game.update({ pot: game.pot + allInAmount });
+        
+        betAmount = allInAmount;
         break;
-        
+
       default:
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid bet type'
-        });
+        return res.status(400).json({ success: false, error: 'Invalid bet type' });
     }
-    
-    // Record the bet
-    await Bet.create({
-      amount: type === 'all-in' ? player.balance : (amount || 0),
-      type,
-      round: game.round,
-      GameId: gameId,
-      PlayerId: playerId
-    });
-    
-    // Determine the next player's turn
-    const nextTurn = await getNextPlayerTurn(gameId);
-    
-    // Update the game's current turn
-    await game.update({ currentTurn: nextTurn });
-    
-    // Get the updated game state
-    const gameState = await getGameState(gameId);
-    
+
+    // Record the bet if not fold or check
+    if (type !== 'fold' && type !== 'check') {
+      await models.Bet.create({
+        amount: betAmount,
+        type,
+        round: game.round,
+        PlayerId: playerId,
+        GameId: gameId
+      });
+    }
+
     res.status(200).json({
       success: true,
-      message: 'Bet placed successfully',
-      gameState
+      bet: {
+        type,
+        amount: betAmount,
+        round: game.round
+      }
     });
   } catch (error) {
     console.error('Error placing bet:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to place bet',
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: 'Failed to place bet' });
   }
 });
 
@@ -141,41 +146,29 @@ router.post('/place', async (req, res) => {
 router.get('/history/:gameId', async (req, res) => {
   try {
     const { gameId } = req.params;
-    
-    // Find the game
-    const game = await Game.findByPk(gameId);
-    
-    if (!game) {
-      return res.status(404).json({
-        success: false,
-        message: 'Game not found'
-      });
-    }
-    
-    // Get bet history
-    const bets = await Bet.findAll({
+
+    // Find all bets for the game
+    const bets = await models.Bet.findAll({
       where: { GameId: gameId },
-      include: [
-        {
-          model: Player,
-          attributes: ['id', 'name']
-        }
-      ],
+      include: [models.Player],
       order: [['createdAt', 'DESC']]
     });
-    
+
     res.status(200).json({
       success: true,
-      bets
+      bets: bets.map(bet => ({
+        id: bet.id,
+        amount: bet.amount,
+        type: bet.type,
+        round: bet.round,
+        player: bet.Player ? bet.Player.name : 'Unknown',
+        timestamp: bet.createdAt
+      }))
     });
   } catch (error) {
     console.error('Error getting bet history:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get bet history',
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: 'Failed to get bet history' });
   }
 });
 
-module.exports = router; 
+export default router; 

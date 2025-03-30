@@ -15,6 +15,7 @@ A web application that helps manage poker games by eliminating the need for phys
 - **Backend**: Node.js, Express, SQLite, Socket.io
 - **Frontend**: React, Socket.io Client
 - **Data Storage**: SQLite with Sequelize ORM
+- **Containerization**: Docker, Docker Compose
 
 ## Getting Started
 
@@ -22,8 +23,9 @@ A web application that helps manage poker games by eliminating the need for phys
 
 - Node.js (v14 or higher)
 - npm
+- Docker and Docker Compose (for production deployment)
 
-### Installation
+### Development Setup
 
 1. Clone the repository:
    ```
@@ -43,22 +45,60 @@ A web application that helps manage poker games by eliminating the need for phys
    npm install
    ```
 
-### Running the Application
-
-1. Start the backend server:
+4. Start the backend server:
    ```
-   cd backend
+   cd ../backend
    npm run dev
    ```
 
-2. Start the frontend development server:
+5. Start the frontend development server:
    ```
    cd ../frontend
    npm start
    ```
 
-3. Open your browser and navigate to:
+6. Open your browser and navigate to:
    - Main application: http://localhost:3000
+
+### Production Deployment
+
+#### Using Docker Compose
+
+1. Create a .env file in the backend directory (copy from .env.example):
+   ```
+   cp backend/.env.example backend/.env
+   ```
+
+2. Build and start the containers:
+   ```
+   docker-compose up -d --build
+   ```
+
+3. Access the application:
+   - Main application: http://localhost (or your server's IP/domain)
+
+#### Manual Deployment
+
+1. Build the frontend:
+   ```
+   cd frontend
+   npm run build
+   ```
+
+2. Set up the backend:
+   ```
+   cd ../backend
+   npm install --production
+   ```
+
+3. Configure environment variables in backend/.env
+
+4. Start the backend server:
+   ```
+   npm start
+   ```
+
+5. Serve the frontend build folder using a web server of your choice (Nginx, Apache, etc.)
 
 ## Usage
 
@@ -72,23 +112,24 @@ A web application that helps manage poker games by eliminating the need for phys
    - Enter the room code and your name
    - You'll be directed to the player controller
 
-3. **Table Display**:
-   - The first player (admin) will see the main table display
-   - This should be shown on a TV or laptop that all players can see
+3. **Starting a Game**:
+   - The admin (creator) will see all players in the room
+   - Players must mark themselves as ready
+   - When all players are ready, the admin can start the game
 
-4. **Player Controls**:
-   - Use the player controller to place bets, fold, call, or check
-   - Buy in again if you run out of chips
-   - See your current balance and game status
+4. **Playing the Game**:
+   - Use the controller to place bets, fold, or check
+   - All actions are reflected on the main table display
+   - Players who run out of money can buy in again
 
-5. **End Game and Settlements**:
-   - The admin can end the game when play is complete
-   - The system will calculate who owes whom based on buy-ins and final balances
-   - Settlements will be displayed on the main table display
+5. **Ending a Game**:
+   - The admin can end the game at any time
+   - Results are calculated and displayed
+   - Players can settle up based on the final balances
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgments
 

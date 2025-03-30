@@ -1,5 +1,6 @@
-import React, { createContext, useState, useEffect, useContext } from 'react';
-import api from '../services/api';
+import React, { createContext, useState, useContext, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import * as api from '../services/api';
 import socketService from '../services/socket';
 
 // Create the context
@@ -10,56 +11,84 @@ export const useGame = () => useContext(GameContext);
 
 // Game provider component
 export const GameProvider = ({ children }) => {
+  const navigate = useNavigate();
+  
+  // State variables
   const [gameState, setGameState] = useState(null);
   const [player, setPlayer] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [settlements, setSettlements] = useState(null);
+  const [isGameReady, setIsGameReady] = useState(false);
 
-  // Initialize socket connection
+  // Connect to socket when game and player info is available
   useEffect(() => {
-    socketService.connect();
-
-    // Subscribe to game state updates
-    const unsubscribe = socketService.onGameStateUpdate((newGameState) => {
-      setGameState(newGameState);
-    });
-
-    // Subscribe to error messages
-    const errorUnsubscribe = socketService.onError((errorMsg) => {
-      setError(errorMsg.message);
-    });
-
-    return () => {
-      unsubscribe();
-      errorUnsubscribe();
-      socketService.disconnect();
-    };
-  }, []);
+    if (gameState && player) {
+      // Connect to socket
+      socketService.connect(gameState.roomCode, player.id);
+      
+      // Subscribe to game state updates
+      const unsubGameState = socketService.onGameStateUpdate((newGameState) => {
+        setGameState(newGameState);
+        
+        // Check if game is ready
+        if (newGameState.status === 'ready') {
+          setIsGameReady(true);
+        } else {
+          setIsGameReady(false);
+        }
+      });
+      
+      // Subscribe to game ready event
+      const unsubGameReady = socketService.onGameReady(() => {
+        setIsGameReady(true);
+      });
+      
+      // Subscribe to game started event
+      const unsubGameStarted = socketService.onGameStarted((newGameState) => {
+        setGameState(newGameState);
+      });
+      
+      // Subscribe to errors
+      const unsubError = socketService.onError((errorData) => {
+        setError(errorData.message);
+        
+        // Clear error after 5 seconds
+        setTimeout(() => setError(null), 5000);
+      });
+      
+      // Cleanup subscriptions on unmount
+      return () => {
+        unsubGameState();
+        unsubGameReady();
+        unsubGameStarted();
+        unsubError();
+        socketService.disconnect();
+      };
+    }
+  }, [gameState, player]);
 
   // Create a new game
-  const createGame = async (buyInAmount = 100) => {
+  const createGame = async (buyIn) => {
     try {
       setLoading(true);
       setError(null);
       
-      const response = await api.createGame(buyInAmount);
+      const response = await api.createGame(buyIn);
       
-      if (response.success) {
-        return response.game;
-      } else {
-        setError(response.message || 'Failed to create game');
-        return null;
+      if (response) {
+        navigate(`/join/${response.game.roomCode}`);
       }
-    } catch (err) {
-      setError(err.message || 'Failed to create game');
+      
+      return response;
+    } catch (error) {
+      setError(error.message || 'Failed to create game');
       return null;
     } finally {
       setLoading(false);
     }
   };
 
-  // Join a game
+  // Join an existing game
   const joinGame = async (roomCode, playerName) => {
     try {
       setLoading(true);
@@ -67,173 +96,172 @@ export const GameProvider = ({ children }) => {
       
       const response = await api.joinGame(roomCode, playerName);
       
-      if (response.success) {
+      if (response) {
         setPlayer(response.player);
-        socketService.joinRoom(roomCode, response.player.id);
+        setGameState(await api.getGameState(roomCode));
         
-        // Get initial game state
-        const gameStateResponse = await api.getGameState(roomCode);
-        if (gameStateResponse.success) {
-          setGameState(gameStateResponse.gameState);
+        // Navigate to the correct page based on player role
+        if (response.player.isAdmin) {
+          navigate(`/table/${roomCode}`);
+        } else {
+          navigate(`/controller/${roomCode}`);
         }
-        
-        return response.player;
-      } else {
-        setError(response.message || 'Failed to join game');
-        return null;
       }
-    } catch (err) {
-      setError(err.message || 'Failed to join game');
+      
+      return response;
+    } catch (error) {
+      setError(error.message || 'Failed to join game');
       return null;
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Set player ready status
+  const setPlayerReady = async (isReady) => {
+    if (!player) return false;
+    
+    try {
+      setError(null);
+      
+      // Emit socket event to set player ready
+      socketService.setPlayerReady(gameState.roomCode, player.id, isReady);
+      
+      return true;
+    } catch (error) {
+      setError(error.message || 'Failed to set ready status');
+      return false;
+    }
+  };
+
+  // Start the game (admin only)
+  const startGame = async () => {
+    if (!gameState || !isAdmin()) return false;
+    
+    try {
+      setError(null);
+      
+      // Emit socket event to start game
+      socketService.startGame(gameState.roomCode);
+      
+      return true;
+    } catch (error) {
+      setError(error.message || 'Failed to start game');
+      return false;
     }
   };
 
   // Place a bet
-  const placeBet = async (type, amount = 0) => {
+  const placeBet = async (betType, amount = 0) => {
+    if (!player || !gameState) return false;
+    
     try {
-      if (!player || !gameState) {
-        setError('Player or game not found');
+      setError(null);
+      
+      // Check if it's the player's turn
+      if (!isPlayerTurn() && betType !== 'buy-in') {
+        setError('It\'s not your turn');
         return false;
       }
       
-      setLoading(true);
-      setError(null);
-      
-      socketService.sendPlayerAction(
-        gameState.roomCode,
-        player.id,
-        type,
-        amount
-      );
+      // Emit socket event for bet
+      socketService.placeBet(betType, amount);
       
       return true;
-    } catch (err) {
-      setError(err.message || 'Failed to place bet');
+    } catch (error) {
+      setError(error.message || 'Failed to place bet');
       return false;
-    } finally {
-      setLoading(false);
     }
   };
 
-  // Buy in again
+  // Buy in to the game
   const buyIn = async (amount) => {
+    if (!player || !gameState) return false;
+    
     try {
-      if (!player) {
-        setError('Player not found');
-        return false;
-      }
-      
-      setLoading(true);
       setError(null);
       
-      socketService.sendPlayerAction(
-        gameState.roomCode,
-        player.id,
-        'buy-in',
-        amount
-      );
+      // Emit socket event for buy-in
+      socketService.buyIn(amount);
       
       return true;
-    } catch (err) {
-      setError(err.message || 'Failed to buy in');
+    } catch (error) {
+      setError(error.message || 'Failed to buy in');
       return false;
-    } finally {
-      setLoading(false);
     }
   };
 
-  // End the game and calculate settlements
+  // End the game (admin only)
   const endGame = async () => {
+    if (!gameState || !isAdmin()) return false;
+    
     try {
-      if (!gameState) {
-        setError('Game not found');
-        return false;
-      }
-      
-      setLoading(true);
       setError(null);
       
-      const response = await api.endGame(gameState.roomCode);
+      // Emit socket event to end game
+      socketService.endGame(gameState.roomCode);
       
-      if (response.success) {
-        setSettlements(response.results);
-        return response.results;
-      } else {
-        setError(response.message || 'Failed to end game');
-        return null;
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to end game');
-      return null;
-    } finally {
-      setLoading(false);
+      return true;
+    } catch (error) {
+      setError(error.message || 'Failed to end game');
+      return false;
     }
   };
 
-  // Reset the game for a new round
+  // Reset the game for a new round (admin only)
   const resetGame = async () => {
+    if (!gameState || !isAdmin()) return false;
+    
     try {
-      if (!gameState) {
-        setError('Game not found');
-        return false;
-      }
-      
-      setLoading(true);
       setError(null);
       
-      const response = await api.resetGame(gameState.roomCode);
+      // Emit socket event to reset game
+      socketService.resetGame(gameState.roomCode);
       
-      if (response.success) {
-        setSettlements(null);
-        return true;
-      } else {
-        setError(response.message || 'Failed to reset game');
-        return false;
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to reset game');
+      return true;
+    } catch (error) {
+      setError(error.message || 'Failed to reset game');
       return false;
-    } finally {
-      setLoading(false);
     }
   };
 
-  // Kick a player
+  // Kick a player from the game (admin only)
   const kickPlayer = async (playerId) => {
+    if (!gameState || !isAdmin()) return false;
+    
     try {
-      setLoading(true);
       setError(null);
       
-      const response = await api.kickPlayer(playerId);
+      // Emit socket event to kick player
+      socketService.kickPlayer(gameState.roomCode, playerId);
       
-      return response.success;
-    } catch (err) {
-      setError(err.message || 'Failed to kick player');
+      return true;
+    } catch (error) {
+      setError(error.message || 'Failed to kick player');
       return false;
-    } finally {
-      setLoading(false);
     }
   };
 
   // Leave the game
   const leaveGame = () => {
-    if (player && gameState) {
-      socketService.leaveRoom(gameState.roomCode, player.id);
-    }
-    
-    setPlayer(null);
+    socketService.leaveGame();
     setGameState(null);
-    setSettlements(null);
+    setPlayer(null);
   };
 
-  // Check if it's the current player's turn
+  // Helper: Check if the current player is the admin
+  const isAdmin = () => {
+    return player && player.isAdmin;
+  };
+
+  // Helper: Check if it's the player's turn
   const isPlayerTurn = () => {
-    if (!player || !gameState) return false;
-    
-    const currentPlayer = gameState.players.find(p => p.id === player.id);
-    return currentPlayer && gameState.currentTurn === currentPlayer.seat;
+    return gameState && player && gameState.currentTurn === player.id;
+  };
+
+  // Helper: Check if the player is ready
+  const isPlayerReady = () => {
+    return player && player.isReady;
   };
 
   // Find player by ID
@@ -259,16 +287,20 @@ export const GameProvider = ({ children }) => {
     player,
     loading,
     error,
-    settlements,
+    isGameReady,
     createGame,
     joinGame,
+    setPlayerReady,
+    startGame,
     placeBet,
     buyIn,
     endGame,
     resetGame,
     kickPlayer,
     leaveGame,
+    isAdmin,
     isPlayerTurn,
+    isPlayerReady,
     getPlayerById
   };
 

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: poker-companion-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - NODE_ENV=production
+      - FRONTEND_URL=http://localhost
+      - SOCKET_ORIGIN=http://localhost
+    volumes:
+      - ./backend/data:/app/data
+    networks:
+      - app-network
+
+  frontend:
+    build: 
+      context: ./frontend
+      args:
+        - REACT_APP_API_URL=http://localhost:5000
+    container_name: poker-companion-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge 

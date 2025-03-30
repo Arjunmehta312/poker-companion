@@ -1,18 +1,18 @@
-const { DataTypes } = require('sequelize');
+import { DataTypes } from 'sequelize';
 
-module.exports = (sequelize) => {
+export default (sequelize) => {
   const Bet = sequelize.define('Bet', {
     id: {
-      type: DataTypes.INTEGER,
-      primaryKey: true,
-      autoIncrement: true
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true
     },
     amount: {
       type: DataTypes.FLOAT,
-      defaultValue: 0
+      allowNull: false
     },
     type: {
-      type: DataTypes.ENUM('raise', 'call', 'fold', 'check', 'blind', 'all-in'),
+      type: DataTypes.ENUM('raise', 'call', 'check', 'fold', 'all-in'),
       allowNull: false
     },
     round: {

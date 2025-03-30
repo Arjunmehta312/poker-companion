@@ -1,162 +1,181 @@
-const { v4: uuidv4 } = require('uuid');
-const { Game, Player, Bet } = require('../models');
+import models from '../models/index.js';
 
-// Generate a unique room code
-const generateRoomCode = () => {
-  // Generate a 6-character alphanumeric room code
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+// Generate a unique room code (6 characters, uppercase)
+export const generateRoomCode = () => {
+  const characters = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Excluded confusing characters like I, O, 0, 1
+  let result = '';
+  for (let i = 0; i < 6; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return result;
 };
 
-// Calculate settlements at the end of the game
-const calculateSettlements = async (gameId) => {
-  // Get all players in the game
-  const players = await Player.findAll({
+// Get the next available seat in a game
+export const getNextAvailableSeat = async (gameId) => {
+  const players = await models.Player.findAll({
     where: { GameId: gameId },
-    attributes: ['id', 'name', 'balance', 'totalBuyIn']
+    order: [['seatNumber', 'ASC']],
   });
 
-  // Calculate profit/loss for each player
-  const settlements = [];
-  
-  players.forEach(player => {
-    const profitLoss = player.balance - player.totalBuyIn;
-    settlements.push({
-      playerId: player.id,
-      playerName: player.name,
-      totalBuyIn: player.totalBuyIn,
-      finalBalance: player.balance,
-      profitLoss
-    });
-  });
+  // If no players, start with seat 1
+  if (players.length === 0) {
+    return 1;
+  }
 
-  // Calculate who owes whom
-  const debts = [];
-  
-  // Sort players by profit/loss (winners first)
-  settlements.sort((a, b) => b.profitLoss - a.profitLoss);
-  
-  const winners = settlements.filter(player => player.profitLoss > 0);
-  const losers = settlements.filter(player => player.profitLoss < 0);
-  
-  // Match losers to winners to settle debts
-  losers.forEach(loser => {
-    let remainingDebt = Math.abs(loser.profitLoss);
-    
-    for (const winner of winners) {
-      if (remainingDebt <= 0) break;
-      
-      const winnerRemainingToCollect = winner.profitLoss;
-      if (winnerRemainingToCollect <= 0) continue;
-      
-      const amountToTransfer = Math.min(remainingDebt, winnerRemainingToCollect);
-      
-      if (amountToTransfer > 0) {
-        debts.push({
-          from: loser.playerName,
-          to: winner.playerName,
-          amount: amountToTransfer
-        });
-        
-        remainingDebt -= amountToTransfer;
-        winner.profitLoss -= amountToTransfer;
-      }
+  // Find the first available seat
+  let seat = 1;
+  for (const player of players) {
+    if (player.seatNumber !== seat) {
+      return seat;
     }
-  });
-  
-  return {
-    playerResults: settlements,
-    settlements: debts
-  };
+    seat++;
+  }
+
+  // All consecutive seats are taken, use the next one
+  return players.length + 1;
 };
 
-// Get full game state
-const getGameState = async (gameId) => {
-  const game = await Game.findByPk(gameId, {
-    include: [
-      {
-        model: Player,
-        attributes: ['id', 'name', 'balance', 'totalBuyIn', 'seat', 'status', 'currentBet', 'isConnected']
-      }
-    ]
+// Calculate the next player's turn
+export const getNextPlayerTurn = async (gameId, currentTurn = null) => {
+  const players = await models.Player.findAll({
+    where: { 
+      GameId: gameId,
+      status: ['active', 'all-in'] // Only active players or all-in can be in the turn order
+    },
+    order: [['seatNumber', 'ASC']],
   });
+
+  if (players.length <= 1) {
+    return players.length === 1 ? players[0].id : null;
+  }
+
+  // If no current turn, start with the first player
+  if (!currentTurn) {
+    return players[0].id;
+  }
+
+  // Find the index of the current player
+  const currentIndex = players.findIndex(p => p.id === currentTurn);
   
+  // If player not found, start with the first player
+  if (currentIndex === -1) {
+    return players[0].id;
+  }
+
+  // Move to the next player
+  const nextIndex = (currentIndex + 1) % players.length;
+  return players[nextIndex].id;
+};
+
+// Get complete game state
+export const getGameState = async (roomCode) => {
+  const game = await models.Game.findOne({
+    where: { roomCode },
+  });
+
   if (!game) {
     throw new Error('Game not found');
   }
-  
+
+  const players = await models.Player.findAll({
+    where: { GameId: game.id },
+    order: [['seatNumber', 'ASC']],
+  });
+
+  const bets = await models.Bet.findAll({
+    where: { GameId: game.id },
+    include: [models.Player],
+    order: [['createdAt', 'DESC']],
+  });
+
   return {
     id: game.id,
     roomCode: game.roomCode,
-    pot: game.pot,
     status: game.status,
-    buyInAmount: game.buyInAmount,
-    currentTurn: game.currentTurn,
+    isStarted: game.isStarted,
+    pot: game.pot,
     round: game.round,
     smallBlind: game.smallBlind,
     bigBlind: game.bigBlind,
-    players: game.Players
+    currentTurn: game.currentTurn,
+    dealerPosition: game.dealerPosition,
+    players: players.map(p => ({
+      id: p.id,
+      name: p.name,
+      balance: p.balance,
+      buyIn: p.buyIn,
+      status: p.status,
+      currentBet: p.currentBet,
+      seatNumber: p.seatNumber,
+      isAdmin: p.isAdmin,
+      isConnected: p.isConnected,
+      isReady: p.isReady,
+    })),
+    recentBets: bets.slice(0, 10).map(b => ({
+      id: b.id,
+      amount: b.amount,
+      type: b.type,
+      round: b.round,
+      player: b.Player ? b.Player.name : 'Unknown',
+      timestamp: b.createdAt,
+    })),
+    startTime: game.startTime,
+    endTime: game.endTime,
   };
 };
 
-// Find the next available seat
-const findAvailableSeat = async (gameId) => {
-  const players = await Player.findAll({
-    where: { GameId: gameId },
-    attributes: ['seat']
-  });
-  
-  const occupiedSeats = players.map(player => player.seat);
-  // Assuming a maximum of 10 players in a poker game
-  for (let seat = 1; seat <= 10; seat++) {
-    if (!occupiedSeats.includes(seat)) {
-      return seat;
+// Calculate settlements between players
+export const calculateSettlements = (players) => {
+  const settlements = [];
+
+  // Calculate net profit/loss for each player
+  players.forEach(player => {
+    const netAmount = player.balance - player.buyIn;
+    
+    if (netAmount !== 0) {
+      settlements.push({
+        playerId: player.id,
+        playerName: player.name,
+        amount: netAmount,
+      });
     }
-  }
-  
-  return null; // No available seats
-};
-
-// Determine the next player's turn
-const getNextPlayerTurn = async (gameId) => {
-  const game = await Game.findByPk(gameId, {
-    include: [
-      {
-        model: Player,
-        where: { status: 'active' },
-        attributes: ['id', 'seat']
-      }
-    ]
   });
-  
-  if (!game || game.Players.length < 2) {
-    return null;
-  }
-  
-  // Sort players by seat number
-  const activePlayers = [...game.Players].sort((a, b) => a.seat - b.seat);
-  
-  // If the current turn is not set or invalid, start with the first player
-  if (!game.currentTurn) {
-    return activePlayers[0].seat;
-  }
-  
-  // Find the index of the current player
-  const currentIndex = activePlayers.findIndex(player => player.seat === game.currentTurn);
-  
-  // If the current player wasn't found, start with the first player
-  if (currentIndex === -1) {
-    return activePlayers[0].seat;
-  }
-  
-  // Get the next player's seat (wrapping around to the beginning if necessary)
-  const nextIndex = (currentIndex + 1) % activePlayers.length;
-  return activePlayers[nextIndex].seat;
-};
 
-module.exports = {
-  generateRoomCode,
-  calculateSettlements,
-  getGameState,
-  findAvailableSeat,
-  getNextPlayerTurn
+  // Sort by amount (descending)
+  settlements.sort((a, b) => b.amount - a.amount);
+
+  // Calculate transfers to settle debts
+  const transfers = [];
+  
+  // Create copies of settlements to work with
+  const creditors = settlements.filter(s => s.amount > 0).map(s => ({ ...s }));
+  const debtors = settlements.filter(s => s.amount < 0).map(s => ({ ...s }));
+
+  // Match creditors with debtors
+  while (creditors.length > 0 && debtors.length > 0) {
+    const creditor = creditors[0];
+    const debtor = debtors[0];
+    
+    // Find the smaller amount
+    const transferAmount = Math.min(creditor.amount, -debtor.amount);
+    
+    transfers.push({
+      from: debtor.playerName,
+      to: creditor.playerName,
+      amount: transferAmount,
+    });
+    
+    // Update remaining amounts
+    creditor.amount -= transferAmount;
+    debtor.amount += transferAmount;
+    
+    // Remove settled parties
+    if (creditor.amount === 0) creditors.shift();
+    if (debtor.amount === 0) debtors.shift();
+  }
+
+  return {
+    players: settlements,
+    transfers,
+  };
 }; 
